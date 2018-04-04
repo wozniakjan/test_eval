@@ -2,8 +2,8 @@
 
 Repo with a helper for identifying slower running parts of origin extended tests.
 
-`run.sh` - by default, fetches last successful build log from (an extended test)[https://ci.openshift.redhat.com/jenkins/job/test_branch_origin_extended_builds]
-`top.go` - uses that build log and creates an output directory identifying slow windows in our tests and order them from slowest to fastest
+- `run.sh` - by default, fetches last successful build log from [an extended test](https://ci.openshift.redhat.com/jenkins/job/test_branch_origin_extended_builds)
+- `top.go` - uses that build log and creates an output directory identifying slow windows in our tests and order them from slowest to fastest
 
 Example output may look like:
 ```
