@@ -2,6 +2,7 @@
 
 JENKINS=https://ci.openshift.redhat.com/jenkins
 JOB_NAME=test_branch_origin_extended_builds
+#JOB_NAME=test_branch_origin_extended_image_ecosystem
 #if left empty, finds last successfull build
 BUILD_ID=
 
@@ -10,7 +11,12 @@ if [[ $BUILD_ID == "" ]]; then
 fi
 if [[ $BUILD_ID > 0 ]]; then
     LOG_FILE="${BUILD_ID}-${JOB_NAME}.log"
-    curl -s https://ci.openshift.redhat.com/jenkins/job/$JOB_NAME/$BUILD_ID/consoleText > $LOG_FILE
+    if [[ -f $LOG_FILE ]]; then
+        echo "already exists $LOG_FILE"
+    else
+        echo "fetching $LOG_FILE"
+        curl -s https://ci.openshift.redhat.com/jenkins/job/$JOB_NAME/$BUILD_ID/consoleText > $LOG_FILE
+    fi
 else
     echo "invalid BUILD_ID $BUILD_ID"
     exit 1
@@ -21,4 +27,5 @@ if [[ -d $OUT ]]; then
     rm -rf $OUT
 fi
 
+echo generating output from $LOG_FILE to $OUT
 go run top.go -f $LOG_FILE -c -1 -o $OUT
