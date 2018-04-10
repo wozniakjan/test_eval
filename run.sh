@@ -1,7 +1,7 @@
 #!/bin/bash
 
 JENKINS=https://ci.openshift.redhat.com/jenkins
-JOB_NAME=test_branch_origin_extended_builds
+JOB_NAME=test_branch_origin_extended_builds_debug
 #JOB_NAME=test_branch_origin_extended_image_ecosystem
 #if left empty, finds last successfull build
 BUILD_ID=
@@ -15,7 +15,7 @@ if [[ $BUILD_ID > 0 ]]; then
         echo "already exists $LOG_FILE"
     else
         echo "fetching $LOG_FILE"
-        curl -s https://ci.openshift.redhat.com/jenkins/job/$JOB_NAME/$BUILD_ID/consoleText > $LOG_FILE
+        curl -s https://ci.openshift.redhat.com/jenkins/job/$JOB_NAME/$BUILD_ID/consoleText | grep -v '^+' > $LOG_FILE
     fi
 else
     echo "invalid BUILD_ID $BUILD_ID"
