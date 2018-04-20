@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -15,29 +16,42 @@ import (
 var slowTestRegexp = regexp.MustCompile(`^• \[SLOW TEST:(.*) seconds\]$`)
 var fileNameRegexp = regexp.MustCompile(`.*(/test/extended/.*\.go.*)`)
 var timeRegexp = regexp.MustCompile(`^([A-Z][a-z]{2}[ ]{1,2}[0-9]{1,2}[ ]{1,2}[0-9]{1,2}:[0-9]{2}:[0-9]{2}).*`)
-var interestingRegexp = regexp.MustCompile(`^(STEP:)|(\[It\])`)
 var dockerTime = `^[0-9]{4}-[0-9]{2}-[0-9]{2}T([0-9]{2}:[0-9]{2}:[0-9]{2}).[0-9]*Z `
 var dockerBuildStart = regexp.MustCompile(dockerTime + `Step 1/`)
 var dockerBuildEnd = regexp.MustCompile(dockerTime + `Successfully built`)
 var dockerPushStart = regexp.MustCompile(dockerTime + `Pushing image`)
 var dockerPushEnd = regexp.MustCompile(dockerTime + `Push successful`)
+var ignoreLines = []string{`INFO: Running AfterSuite actions on all node`}
 
 type test struct {
 	time       float64
 	dockerInfo dockerInfo
-	lines      []string
+	//blocks     []block
+	lines []string
 }
 
+type blocks struct {
+	offset int64
+	Name   string  `json:"name"`
+	Blocks []block `json:"block"`
+}
 type block struct {
-	start     int64
-	startLine string
-	end       int64
-	endLine   string
-	blockType string
+	Lines     []string `json:"lines"`
+	Start     int64    `json:"start"`
+	End       int64    `json:"end"`
+	BlockType string   `json:"blockType"`
+}
+
+type dockerBlock struct {
+	Start     int64
+	StartLine string
+	End       int64
+	EndLine   string
+	BlockType string
 }
 
 type dockerInfo struct {
-	blocks []block
+	blocks []dockerBlock
 }
 
 type stats struct {
@@ -51,7 +65,6 @@ type line struct {
 }
 
 type window struct {
-	window      []line
 	timedWindow []line
 	size        int
 }
@@ -68,6 +81,7 @@ func main() {
 	flag.Parse()
 	stats := parse(*file)
 	printTop(stats)
+	printStats(stats)
 }
 
 func (w *window) processLine(l string) bool {
@@ -76,103 +90,145 @@ func (w *window) processLine(l string) bool {
 		tl := line{t.Unix(), l, true}
 		if len(w.timedWindow) < w.size {
 			w.timedWindow = append(w.timedWindow, tl)
-			w.window = append(w.window, tl)
 		} else {
 			w.timedWindow = w.timedWindow[1:]
-			w.window = w.window[1:]
-			for !w.window[0].hasTime {
-				w.window = w.window[1:]
-			}
 			w.timedWindow = append(w.timedWindow, tl)
-			w.window = append(w.window, tl)
 		}
 		return true
-	} else {
-		if m := interestingRegexp.FindStringSubmatch(l); len(m) > 1 {
-			w.window = append(w.window, line{0, l, false})
-		}
 	}
 	return false
 }
 
-func copyAndAppend(lines []string, ci int, w window) window {
-	nw := make([]line, len(w.window))
+func copyWin(w window) window {
 	ntw := make([]line, len(w.timedWindow))
-	copy(nw, w.window)
 	copy(ntw, w.timedWindow)
-	newWindow := window{nw, ntw, len(w.timedWindow)*2 - 1}
-	pi := 1
-	for i := ci + 1; i < len(lines) && pi < len(w.timedWindow); i++ {
-		if newWindow.processLine(lines[i]) {
-			pi++
-		}
-	}
-	return newWindow
-}
-
-func (w window) getWindowTime() int64 {
-	return w.timedWindow[len(w.timedWindow)-1].time - w.timedWindow[0].time
+	return window{ntw, len(w.timedWindow)}
 }
 
 func (w window) getTime() int64 {
-	if len(w.timedWindow) == w.size {
-		return w.getWindowTime()
+	if len(w.timedWindow) == 0 {
+		return 0
 	}
-	return 0
+	return w.timedWindow[len(w.timedWindow)-1].time - w.timedWindow[0].time
 }
 
-func windows(lines []string) []window {
-	b := make([]window, 0)
-	win := window{make([]line, 0), make([]line, 0, *windowSize), *windowSize}
-	lastI, ci := 0, 0
-	for i, l := range lines {
-		if win.processLine(l) {
-			ci++
+func (blcks *blocks) close(w window) {
+	if len(blcks.Blocks) == 0 {
+		blcks.Blocks = append(blcks.Blocks, block{})
+	}
+	b := &blcks.Blocks[len(blcks.Blocks)-1]
+	b.End = w.timedWindow[len(w.timedWindow)-1].time - blcks.offset
+	b.Lines = append(b.Lines, "...")
+	b.Lines = append(b.Lines, w.timedWindow[len(w.timedWindow)-1].line)
+	b.BlockType = "fast"
+}
+
+func (blcks *blocks) process(w window) {
+	if len(blcks.Blocks) == 0 {
+		blcks.Blocks = append(blcks.Blocks, block{})
+		b := &blcks.Blocks[len(blcks.Blocks)-1]
+		b.Lines = make([]string, 0)
+	}
+	b := &blcks.Blocks[len(blcks.Blocks)-1]
+	if len(b.Lines) == 0 && len(w.timedWindow) > 0 {
+		//init block with first timed line
+		if len(blcks.Blocks) == 1 {
+			blcks.offset = w.timedWindow[0].time
 		}
+		b.Start = w.timedWindow[0].time - blcks.offset
+		b.Lines = append(b.Lines, w.timedWindow[0].line)
+		return
+	}
+	if w.getTime() > int64(*threshold) {
+		b.End = w.timedWindow[0].time - blcks.offset
+		b.Lines = append(b.Lines, "...")
+		b.Lines = append(b.Lines, w.timedWindow[0].line)
+		b.BlockType = "fast"
+		lines := make([]string, 0)
+		for _, l := range w.timedWindow {
+			lines = append(lines, l.line)
+		}
+		sb := block{
+			lines,
+			w.timedWindow[0].time - blcks.offset,
+			w.timedWindow[len(w.timedWindow)-1].time - blcks.offset,
+			"slow",
+		}
+		blcks.Blocks = append(blcks.Blocks, sb)
+		fb := block{
+			[]string{w.timedWindow[len(w.timedWindow)-1].line},
+			w.timedWindow[len(w.timedWindow)-1].time - blcks.offset,
+			0,
+			"fast",
+		}
+		blcks.Blocks = append(blcks.Blocks, fb)
+	}
+}
+
+func process(lines []string) ([]window, blocks) {
+	w := make([]window, 0)
+	b := blocks{0, "", make([]block, 0)}
+	win := window{make([]line, 0), *windowSize}
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		win.processLine(l)
+		b.process(win)
 		if win.getTime() > int64(*threshold) {
-			if lastI+*windowSize <= ci {
-				lastI = ci
-				wc := copyAndAppend(lines, i, win)
-				b = append(b, wc)
+			wc := copyWin(win)
+			w = append(w, wc)
+			wi := i + 1
+			for j := 1; j <= *windowSize && wi < len(lines); wi++ {
+				if win.processLine(lines[wi]) {
+					j++
+				}
 			}
+			i = wi
 		}
 	}
-	sort.Slice(b, func(i, j int) bool { return b[i].getWindowTime() > b[j].getWindowTime() })
-	return b
+	b.close(win)
+	sort.Slice(w, func(i, j int) bool { return w[i].getTime() > w[j].getTime() })
+	return w, b
 }
 
-func getName(i int, t test) string {
+func getNames(i int, t test) (string, string) {
 	fileName := "unknown"
+	testName := "unknown"
 	for _, l := range t.lines {
 		m := fileNameRegexp.FindStringSubmatch(l)
 		if len(m) > 1 {
 			fileName = strings.Replace(m[1], `/`, `_`, -1)
+			testName = m[1]
 			break
 		}
 	}
-	return *out + "/" + fmt.Sprintf("%04d", i) + "_" + fmt.Sprintf("%v", t.time) + fileName
+	return *out + "/" + fmt.Sprintf("%04d", i) + "_" + fmt.Sprintf("%v", t.time) + fileName, testName
 }
 
 func writeResult(i int, t test) error {
-	f, _ := os.Create(getName(i, t))
+	rf, _ := getNames(i, t)
+	f, _ := os.Create(rf)
 	defer f.Close()
 	w := bufio.NewWriter(f)
 	defer w.Flush()
 	fmt.Fprintf(w, "time: %vs\n", t.time)
 	for _, b := range t.dockerInfo.blocks {
+		if b.End == -1 {
+			b.End = b.Start
+		}
 		fmt.Fprintf(w, "docker %v: %vs\n  %v\n  %v\n",
-			b.blockType,
-			b.end-b.start,
-			b.startLine,
-			b.endLine)
+			b.BlockType,
+			b.End-b.Start,
+			b.StartLine,
+			b.EndLine)
 	}
-	windows := windows(t.lines)
+	windows, _ := process(t.lines)
 	for i, b := range windows {
-		fmt.Fprintf(w, "\nWindow %v - %vs\n", i, b.getWindowTime())
+		fmt.Fprintf(w, "\nWindow %v - %vs\n", i, b.getTime())
 		for _, l := range b.timedWindow {
 			fmt.Fprintf(w, "%v\n", l.line)
 		}
 	}
+
 	fmt.Fprintf(w, "\n\nEntire output:\n")
 	for _, l := range t.lines {
 		fmt.Fprintf(w, "%v\n", l)
@@ -194,6 +250,15 @@ func printTop(s stats) {
 	}
 }
 
+func ignore(line string) bool {
+	for _, l := range ignoreLines {
+		if strings.Contains(line, l) {
+			return true
+		}
+	}
+	return false
+}
+
 func parse(f string) stats {
 	file, err := os.Open(f)
 	if err != nil {
@@ -207,6 +272,9 @@ func parse(f string) stats {
 	dockerInfo := newDockerInfo()
 	for scanner.Scan() {
 		line := scanner.Text()
+		if ignore(line) {
+			continue
+		}
 		if strings.HasPrefix(line, "• [SLOW TEST:") {
 			//end
 			time, err := strconv.ParseFloat(slowTestRegexp.FindStringSubmatch(line)[1], 64)
@@ -214,6 +282,8 @@ func parse(f string) stats {
 				panic(err)
 			}
 			stats.tests = append(stats.tests, test{time, dockerInfo, buffer})
+			buffer = make([]string, 0)
+			dockerInfo = newDockerInfo()
 		} else if strings.HasPrefix(line, "------------------------------") {
 			//start
 			buffer = make([]string, 0)
@@ -232,8 +302,7 @@ func parse(f string) stats {
 }
 
 func newDockerInfo() dockerInfo {
-	return dockerInfo{make([]block, 0, 0)}
-	//return dockerInfo
+	return dockerInfo{make([]dockerBlock, 0, 0)}
 }
 
 func getDockerTime(re *regexp.Regexp, line string) int64 {
@@ -246,25 +315,48 @@ func getDockerTime(re *regexp.Regexp, line string) int64 {
 
 func (di *dockerInfo) parseDockerInfo(line string) {
 	if time := getDockerTime(dockerBuildStart, line); time != -1 {
-		b := block{time, line, -1, "", "build"}
+		b := dockerBlock{time, line, -1, "", "build"}
 		di.blocks = append(di.blocks, b)
 		return
 	}
 	if time := getDockerTime(dockerPushStart, line); time != -1 {
-		b := block{time, line, -1, "", "push"}
+		b := dockerBlock{time, line, -1, "", "push"}
 		di.blocks = append(di.blocks, b)
 		return
 	}
 	if time := getDockerTime(dockerBuildEnd, line); time != -1 {
 		b := &(di.blocks[len(di.blocks)-1])
-		b.end = time
-		b.endLine = line
+		b.End = time
+		b.EndLine = line
 		return
 	}
 	if time := getDockerTime(dockerPushEnd, line); time != -1 {
 		b := &(di.blocks[len(di.blocks)-1])
-		b.end = time
-		b.endLine = line
+		b.End = time
+		b.EndLine = line
 		return
+	}
+}
+
+func printStats(s stats) {
+	f, _ := os.Create(*out + "/stats.json")
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+	if *count < 1 || *count > len(s.tests) {
+		*count = len(s.tests)
+	}
+	tests := s.tests[0:*count]
+	allBlocks := make([]blocks, 0)
+	for i, t := range tests {
+		_, n := getNames(i, t)
+		_, blocks := process(t.lines)
+		blocks.Name = n
+		allBlocks = append(allBlocks, blocks)
+	}
+	if json, err := json.MarshalIndent(allBlocks, "", "  "); err == nil {
+		w.Write(json)
+	} else {
+		fmt.Fprintf(w, "ERR: %v", err)
 	}
 }
