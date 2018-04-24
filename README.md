@@ -1,13 +1,16 @@
-# test_eval
+# `test_eval`
 
 Repo with a helper for identifying slower running parts of origin extended tests.
 
 - `run.sh` - by default, fetches last successful build log from [an extended test](https://ci.openshift.redhat.com/jenkins/job/test_branch_origin_extended_builds)
 - `top.go` - uses that build log and creates an output directory identifying slow windows in our tests and order them from slowest to fastest
+- `graph.go` - generate html graph from `top` output
+
+![graph example](/graph.png)
 
 Example output may look like:
 ```
-$ ls out_423-test_branch_origin_extended_builds/
+$ ls outs/423-test_branch_origin_extended_builds/
 0001_1913.131_test_extended_builds_pipeline.go:437                                                       
 0002_957.221_test_extended_builds_pipeline.go:201      
 0003_516.175_test_extended_builds_image_source.go:82
