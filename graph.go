@@ -47,7 +47,6 @@ func testNames(b []test) string {
 		labels = append(labels, l.Name)
 	}
 	return "[\"" + strings.Join(labels, "\",\n \"") + "\"],"
-	//return `["test/extended/builds/pipeline.go:437", "test/extended/builds/pipeline.go:201", "test/extended/builds/image/source.go:82"],`
 }
 
 func max(tests []test) (int, int64) {
@@ -154,6 +153,7 @@ var pre = `
 		<script type="text/javascript">
 			window.onload = function () {
 				Chart.defaults.groupableBar = Chart.helpers.clone(Chart.defaults.bar);
+                Chart.defaults.global.events = ["click"];
 
 				var helpers = Chart.helpers;
 				Chart.controllers.groupableBar = Chart.controllers.bar.extend({
@@ -252,12 +252,65 @@ func post(max string) string {
 							}]
 						},
 						tooltips: {
+                            enabled: false,
 							callbacks: {
 								label: function(tooltipItem, data) {
-									return  data.datasets[tooltipItem.datasetIndex].labels[tooltipItem.index];
+									return data.datasets[tooltipItem.datasetIndex].labels[tooltipItem.index];
 								}
-							}
+							},
+                            custom: function(tooltipModel) {
+                                var tooltipEl = document.getElementById('chartjs-tooltip');
 
+                                if (!tooltipEl) {
+                                    tooltipEl = document.createElement('div');
+                                    tooltipEl.id = 'chartjs-tooltip';
+                                    tooltipEl.innerHTML = "<table></table>";
+                                    document.body.appendChild(tooltipEl);
+                                }
+
+                                if (tooltipModel.opacity === 0) {
+                                    tooltipEl.style.opacity = 0;
+                                    return;
+                                }
+
+                                function getBody(bodyItem) {
+                                    return bodyItem.lines;
+                                }
+
+                                if (tooltipModel.body) {
+                                    var titleLines = tooltipModel.title || [];
+                                    var bodyLines = tooltipModel.body
+
+                                    var innerHtml = '<thead>';
+
+                                    titleLines.forEach(function(title) {
+                                        var link = title.replace(/:/i,"#L");
+                                        innerHtml += '<tr><th align="left">' + '<a href="https://github.com/openshift/origin/tree/master'+link+'" style="color:white; text-decoration: none">' + title + '</a>' + '</th></tr>';
+                                    });
+                                    innerHtml += '</thead><tbody>';
+
+                                    bodyLines.forEach(function(body, i) {
+                                        innerHtml += '<tr><td>' + body + '</td></tr>';
+                                    });
+                                    innerHtml += '</tbody>';
+
+                                    var tableRoot = tooltipEl.querySelector('table');
+                                    tableRoot.innerHTML = innerHtml;
+                                }
+
+                                var position = this._chart.canvas.getBoundingClientRect();
+                                tooltipEl.style.opacity = 0.7;
+                                tooltipEl.style.position = 'absolute';
+                                tooltipEl.style.left = position.left + tooltipModel.x + 'px';
+                                tooltipEl.style.top = position.top + tooltipModel.y + 'px';
+                                tooltipEl.style.fontFamily = tooltipModel._bodyFontFamily;
+                                tooltipEl.style.fontSize = tooltipModel.bodyFontSize + 'px';
+                                tooltipEl.style.fontStyle = tooltipModel._bodyFontStyle;
+                                tooltipEl.style.padding = tooltipModel.yPadding + 'px ' + tooltipModel.xPadding + 'px';
+                                tooltipEl.style.background = 'black';
+                                tooltipEl.style.color = 'white';
+                                tooltipEl.style.borderRadius = '5px';
+                            }
 						}
 					}
 				});
